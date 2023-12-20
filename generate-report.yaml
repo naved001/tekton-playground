@@ -1,0 +1,82 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: generate-report
+spec:
+  params:
+    - name: month
+      type: string
+      description: "Report month. E.g. 2023-11"
+  steps:
+    - name: clone-repo
+      image: alpine/git
+      workingDir: /workspace/
+      script: |
+        #!/bin/sh
+        set -ex
+        git clone https://github.com/naved001/openshift-usage-scripts -b token-test
+    - name: download-metrics-from-s3
+      image: amazon/aws-cli
+      workingDir: /workspace/openshift-usage-scripts/
+      env:
+        - name: REPORT_MONTH
+          value: $(params.month)
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_SECRET_ACCESS_KEY
+      script: |
+        #!/bin/sh
+        set -ex
+        DIRECTORY_NAME=data_$REPORT_MONTH
+        mkdir $DIRECTORY_NAME
+        aws s3 cp s3://openshift-metrics/$DIRECTORY_NAME/ ./$DIRECTORY_NAME \
+          --endpoint-url=https://s3.us-east-005.backblazeb2.com --recursive
+    - name: merge-metrics
+      image: python:3.9
+      workingDir: /workspace/openshift-usage-scripts/
+      env:
+        - name: REPORT_MONTH
+          value: $(params.month)
+        - name: OPENSHIFT_API_URL
+          value: https://api.shift.nerc.mghpcc.org:6443
+        - name: OPENSHIFT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: metrics-reader
+              key: openshift_token
+      script: |
+        #!/bin/sh
+        set -ex
+        pip install -r requirements.txt
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux-4.14.6.tar.gz | tar xvz -C /usr/local/bin/
+        DIRECTORY_NAME=data_$REPORT_MONTH
+        ls $DIRECTORY_NAME
+        echo $OPENSHIFT_API_URL
+        python openshift_metrics/merge.py $DIRECTORY_NAME/*.json
+    - name: upload-report-to-s3
+      image: amazon/aws-cli
+      workingDir: /workspace/openshift-usage-scripts/
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_SECRET_ACCESS_KEY
+      script: |
+        #!/bin/sh
+        set -ex
+        DIRECTORY_NAME=data_$REPORT_MONTH
+        ls -ahl $DIRECTORY_NAME
+        # do the upload
