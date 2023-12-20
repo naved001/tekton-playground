@@ -1,0 +1,48 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gather-metric
+spec:
+  steps:
+    - name: clone-repo
+      image: alpine/git
+      workingDir: /workspace/
+      script: |
+        #!/bin/sh
+        set -ex
+        git clone https://github.com/CCI-MOC/openshift-usage-scripts
+    - name: run-script
+      image: python:3.8
+      workingDir: /workspace/openshift-usage-scripts/
+      env:
+        - name: OPENSHIFT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: metrics-reader
+              key: openshift_token
+      script: |
+        #!/bin/sh
+        set -ex
+        pip install -r requirements.txt
+        python openshift_metrics/openshift_prometheus_metrics.py \
+          --openshift-url https://thanos-querier-openshift-monitoring.apps.shift.nerc.mghpcc.org
+    - name: upload-to-s3
+      image: amazon/aws-cli
+      workingDir: /workspace/openshift-usage-scripts/
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openshift-metrics-bucket-secret
+              key: AWS_SECRET_ACCESS_KEY
+      script: |
+        #!/bin/sh
+        set -ex
+        DIRECTORY_NAME=$(find . -type d -name 'data*' -print -quit | sed 's|^\./||')
+        aws s3 cp $DIRECTORY_NAME/*.json s3://openshift-metrics/$DIRECTORY_NAME/ \
+          --endpoint-url=https://s3.us-east-005.backblazeb2.com
